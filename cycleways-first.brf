@@ -1,0 +1,86 @@
+# Cycleways first (Christchurch)
+# Strongly prefers separated cycleways and shared paths,
+# then quiet streets, and only then roads with painted lanes.
+# Lower costfactor = more preferred. 1.0 is the best possible.
+
+---context:global
+
+assign downhillcost 0
+assign downhillcutoff 1.5
+assign uphillcost 0
+assign uphillcutoff 1.5
+assign validForBikes 1
+assign turnInstructionMode 1
+
+---context:way
+
+assign turncost 15
+assign initialcost 0
+
+assign bikeok = bicycle=yes|designated|permissive
+
+assign nobike = or bicycle=no
+                   and access=private|no|agricultural not bikeok
+
+# Separated cycleways and shared paths
+assign isdedicated = or highway=cycleway
+                        and highway=path|footway|pedestrian|bridleway bikeok
+
+# Road with a physically separated track mapped on it
+assign isseparated = or cycleway=track|opposite_track
+                     or cycleway:left=track
+                     or cycleway:right=track cycleway:both=track
+
+# Painted lanes or sharrows
+assign islane = or cycleway=lane|opposite_lane|shared_lane|share_busway
+                or cycleway:left=lane|shared_lane|share_busway
+                or cycleway:right=lane|shared_lane|share_busway
+                   cycleway:both=lane|shared_lane|share_busway
+
+assign roadfactor =
+  switch highway=motorway|motorway_link 10000
+  switch highway=trunk|trunk_link 14
+  switch highway=primary|primary_link 8
+  switch highway=secondary|secondary_link 5.5
+  switch highway=tertiary|tertiary_link 3.6
+  switch highway=unclassified|road 2.4
+  switch highway=residential 2.1
+  switch highway=living_street 1.7
+  switch highway=service 2.5
+  switch highway=track 2.2
+  switch highway=path 2.0
+  switch highway=footway|pedestrian 8
+  switch highway=bridleway 4
+  switch highway=steps 25
+  10000
+
+# A painted lane helps a little, but much less than a real cycleway
+assign lanefactor = switch islane multiply roadfactor 0.8 roadfactor
+
+assign basefactor =
+  switch isdedicated 1.0
+  switch isseparated 1.3
+  lanefactor
+
+assign surfacepenalty = switch surface=gravel|ground|dirt|grass|sand|mud|unpaved 0.6 0
+
+assign dismountpenalty = switch bicycle=dismount 3 0
+
+assign wrongway = switch reversedirection=yes
+                         or oneway=yes|true|1 junction=roundabout
+                         oneway=-1
+
+assign contraflow = cycleway=opposite|opposite_lane|opposite_track
+
+assign onewaypenalty = switch and wrongway not contraflow
+                              switch isdedicated 2 10000
+                              0
+
+assign accesspenalty = switch nobike 10000 0
+
+assign costfactor = add max onewaypenalty accesspenalty
+                        add basefactor add surfacepenalty dismountpenalty
+
+---context:node
+
+assign initialcost 0

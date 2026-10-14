@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="en-NZ">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">
+<title>Cycleway Finder</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Cycleways">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#eef2ef">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Barlow+Condensed:wght@600;700&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+/* Layout: full-bleed map; a "from/to" card pinned top, route options in a sheet pinned bottom. */
+:root {
+  --bg: #eef2ef;
+  --panel: #ffffff;
+  --ink: #16211c;
+  --muted: #5a6a62;
+  --line: #d5ded8;
+  --path: #0f8a52;     /* separated cycleway / shared path */
+  --lane: #d98908;     /* painted lane */
+  --road: #c8453a;     /* road, no cycle facility */
+  --focus: #1f5f86;
+  --chip: #e3ebe6;
+  --shadow: 0 6px 24px rgba(16, 36, 26, .16);
+  --f-ui: "Atkinson Hyperlegible", -apple-system, "Segoe UI", Roboto, sans-serif;
+  --f-num: "Barlow Condensed", "Arial Narrow", -apple-system, sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101814; --panel: #18231e; --ink: #e6efe9; --muted: #9db0a6; --line: #2c3b34;
+    --path: #2fbf7c; --lane: #f0a62a; --road: #e86a5e; --focus: #6fb6e0; --chip: #22322b;
+    --shadow: 0 6px 24px rgba(0,0,0,.5);
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 16px/1.35 var(--f-ui); -webkit-tap-highlight-color: transparent; overflow: hidden; }
+#map { position: fixed; inset: 0; z-index: 0; background: var(--bg); }
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+
+/* Top card */
+.top {
+  position: fixed; z-index: 1000; left: 0; right: 0; top: 0;
+  padding-top: calc(env(safe-area-inset-top, 0px) + 10px);
+  padding-left: max(12px, env(safe-area-inset-left, 0px));
+  padding-right: max(12px, env(safe-area-inset-right, 0px));
+  pointer-events: none;
+}
+.card { pointer-events: auto; background: var(--panel); border-radius: 16px; box-shadow: var(--shadow); max-width: 560px; margin: 0 auto; }
+.legs { display: grid; grid-template-columns: 22px 1fr auto; column-gap: 8px; align-items: center; padding: 8px 8px 8px 12px; }
+.dot { width: 12px; height: 12px; border-radius: 50%; justify-self: center; }
+.dot.a { background: var(--focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 25%, transparent); }
+.dot.b { background: var(--road); border-radius: 3px; transform: rotate(45deg); width: 11px; height: 11px; }
+.spine { grid-column: 1; width: 2px; height: 10px; background: var(--line); justify-self: center; }
+.field { min-width: 0; }
+.field input {
+  width: 100%; border: 0; background: var(--chip); border-radius: 10px;
+  padding: 10px 12px; font-size: 16px; min-width: 0;
+}
+.field input::placeholder { color: var(--muted); }
+.field input.gps { color: var(--focus); font-weight: 700; }
+.icon-btn {
+  border: 0; background: transparent; width: 44px; height: 44px; border-radius: 12px;
+  display: grid; place-items: center; color: var(--muted);
+}
+.icon-btn:active { background: var(--chip); }
+.icon-btn.on { color: var(--focus); }
+.icon-btn svg { width: 22px; height: 22px; }
+
+.results { list-style: none; margin: 0; padding: 0 8px 8px; max-height: 40vh; overflow: auto; }
+.results li button {
+  width: 100%; text-align: left; border: 0; background: transparent; padding: 10px 12px; border-radius: 10px;
+  display: grid; gap: 2px;
+}
+.results li button:active, .results li button:focus-visible { background: var(--chip); }
+.results .name { font-weight: 700; }
+.results .addr { color: var(--muted); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.results .action { color: var(--focus); font-weight: 700; }
+.hint { color: var(--muted); font-size: 14px; padding: 0 14px 10px; margin: 0; }
+
+/* Bottom sheet */
+.sheet {
+  position: fixed; z-index: 1000; left: 0; right: 0; bottom: 0;
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
+  padding-left: max(12px, env(safe-area-inset-left, 0px));
+  padding-right: max(12px, env(safe-area-inset-right, 0px));
+  pointer-events: none;
+}
+.sheet .card { padding: 12px; display: grid; gap: 10px; max-height: 46vh; overflow: auto; }
+.status { margin: 0; color: var(--muted); font-size: 15px; }
+.status.err { color: var(--road); font-weight: 700; }
+.routes { display: grid; gap: 8px; }
+.route {
+  border: 2px solid var(--line); background: var(--panel); border-radius: 14px; padding: 10px 12px;
+  text-align: left; display: grid; gap: 6px; width: 100%;
+}
+.route[aria-pressed="true"] { border-color: var(--ink); }
+.route .head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.route .label { font-weight: 700; }
+.route .sub { color: var(--muted); font-size: 13px; }
+.route .nums { font-family: var(--f-num); font-weight: 700; font-size: 22px; letter-spacing: .01em; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.route .nums small { font-size: 15px; color: var(--muted); font-weight: 600; }
+.bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--chip); }
+.bar span { display: block; height: 100%; }
+.bar .p { background: var(--path); } .bar .l { background: var(--lane); } .bar .r { background: var(--road); }
+.mix { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.mix b { color: var(--ink); }
+.mix i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: 0; }
+.route.loading .nums, .route.loading .mix { opacity: .4; }
+.route.failed .sub { color: var(--road); }
+.badge { white-space: nowrap; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--path); }
+
+.fab {
+  position: fixed; z-index: 999; right: max(12px, env(safe-area-inset-right, 0px));
+  width: 48px; height: 48px; border-radius: 50%; border: 0; background: var(--panel); color: var(--focus);
+  box-shadow: var(--shadow); display: grid; place-items: center;
+}
+.fab svg { width: 24px; height: 24px; }
+
+.me { width: 18px; height: 18px; border-radius: 50%; background: var(--focus); border: 3px solid #fff; box-shadow: 0 0 0 6px color-mix(in srgb, var(--focus) 25%, transparent); }
+.pin { width: 18px; height: 18px; border-radius: 4px; transform: rotate(45deg); border: 3px solid #fff; box-shadow: 0 2px 6px rgba(0,0,0,.35); }
+.pin.a { background: var(--focus); border-radius: 50%; }
+.pin.b { background: var(--road); }
+.leaflet-container { font-family: var(--f-ui); }
+.leaflet-control-attribution { font-size: 10px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+<div id="map" aria-label="Map"></div>
+
+<div class="top">
+  <div class="card" id="topCard">
+    <div class="legs">
+      <span class="dot a" aria-hidden="true"></span>
+      <div class="field"><input id="fromInput" class="gps" type="text" inputmode="search" enterkeyhint="search" autocomplete="off" value="My location" aria-label="Start"></div>
+      <button class="icon-btn on" id="gpsBtn" type="button" aria-label="Start from my location" title="Start from my location">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+      </button>
+      <span class="spine" aria-hidden="true"></span><span></span><span></span>
+      <span class="dot b" aria-hidden="true"></span>
+      <div class="field"><input id="toInput" type="text" inputmode="search" enterkeyhint="search" autocomplete="off" placeholder="Where to? Search or tap the map" aria-label="Destination"></div>
+      <button class="icon-btn" id="swapBtn" type="button" aria-label="Swap start and destination" title="Swap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4v16M7 4 3 8M7 4l4 4M17 20V4M17 20l-4-4M17 20l4-4"/></svg>
+      </button>
+    </div>
+    <ul class="results" id="results" hidden></ul>
+    <p class="hint" id="pickHint" hidden></p>
+  </div>
+</div>
+
+<button class="fab" id="recenter" type="button" aria-label="Show my location" title="Show my location">
+  <svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 3 3 10.5l7.5 2.9L13.4 21z"/></svg>
+</button>
+
+<div class="sheet">
+  <div class="card" id="sheet">
+    <p class="status" id="status">Finding your location…</p>
+    <div class="routes" id="routes" hidden></div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+(() => {
+  const BROUTER = "https://brouter.de/brouter";
+  const NOMINATIM = "https://nominatim.openstreetmap.org";
+  const CHCH = [-43.5321, 172.6362];
+  const VIEWBOX = "172.30,-43.35,172.95,-43.80"; // greater Christchurch + Lyttelton
+
+  const OPTIONS = [
+    { id: "cycleways", label: "Cycleways first", sub: "Stays on separated cycleways and paths, even if it's longer", profileFile: "cycleways-first.brf" },
+    { id: "balanced",  label: "Balanced",        sub: "Prefers cycleways without going far out of the way", profile: "trekking" },
+    { id: "quiet",     label: "Quiet streets",   sub: "Avoids busy roads, no extra pull toward cycleways", profileFile: "quiet-streets.brf" },
+  ];
+
+  const $ = (id) => document.getElementById(id);
+  const fromInput = $("fromInput"), toInput = $("toInput"), results = $("results"), statusEl = $("status"),
+        routesEl = $("routes"), gpsBtn = $("gpsBtn"), pickHint = $("pickHint");
+
+  // ---------- map ----------
+  const map = L.map("map", { zoomControl: false, attributionControl: true }).setView(CHCH, 13);
+  L.tileLayer("https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png", {
+    maxZoom: 19, subdomains: "abc",
+    attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · <a href="https://www.cyclosm.org">CyclOSM</a> · routing <a href="https://brouter.de">BRouter</a>'
+  }).addTo(map);
+
+  const icon = (cls) => L.divIcon({ className: "", html: `<div class="${cls}"></div>`, iconSize: [18, 18], iconAnchor: [9, 9] });
+  const meMarker = L.marker(CHCH, { icon: icon("me"), interactive: false, keyboard: false });
+  const startMarker = L.marker(CHCH, { icon: icon("pin a"), keyboard: false });
+  const endMarker = L.marker(CHCH, { icon: icon("pin b"), keyboard: false });
+  const routeLayer = L.layerGroup().addTo(map);
+
+  // keep the recenter button above the sheet
+  const placeFab = () => {
+    const h = $("sheet").getBoundingClientRect().height;
+    $("recenter").style.bottom = `calc(${h + 22}px + env(safe-area-inset-bottom, 0px))`;
+  };
+  new ResizeObserver(placeFab).observe($("sheet"));
+
+  // ---------- state ----------
+  const state = {
+    me: null,            // latest GPS fix {lat, lon}
+    start: { gps: true }, // {gps:true} or {lat, lon, label}
+    end: null,
+    pick: "end",         // what the next map tap sets
+    results: {},         // option id -> parsed route
+    selected: "cycleways",
+    followed: false,
+  };
+
+  const setStatus = (msg, err = false) => { statusEl.textContent = msg; statusEl.classList.toggle("err", err); statusEl.hidden = !msg; };
+
+  // ---------- location ----------
+  let watchId = null;
+  function startWatch() {
+    if (!("geolocation" in navigator)) { setStatus("This browser can't share your location. Type a start address instead.", true); return; }
+    if (watchId !== null) return;
+    watchId = navigator.geolocation.watchPosition((pos) => {
+      const first = !state.me;
+      state.me = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+      meMarker.setLatLng([state.me.lat, state.me.lon]).addTo(map);
+      if (first) {
+        if (!state.end) { map.setView([state.me.lat, state.me.lon], 15); setStatus("Search for a destination, or tap the map."); }
+        if (state.start.gps && state.end) route();
+      }
+      if (state.followed) map.panTo([state.me.lat, state.me.lon], { animate: true });
+    }, (err) => {
+      watchId = null;
+      if (state.start.gps) {
+        setStatus(err.code === 1
+          ? "Location is off for this site. Type a start address, or allow location in Settings › Privacy › Location Services › Safari Websites."
+          : "Couldn't get your location. Type a start address or tap the start field to pick on the map.", true);
+      }
+    }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
+  }
+
+  function useGpsStart() {
+    state.start = { gps: true };
+    fromInput.value = "My location"; fromInput.classList.add("gps"); gpsBtn.classList.add("on");
+    map.removeLayer(startMarker);
+    startWatch();
+    if (state.me && state.end) route(); else if (!state.me) setStatus("Finding your location…");
+  }
+
+  function setPoint(which, p) {
+    if (which === "start") {
+      state.start = p;
+      fromInput.value = p.label; fromInput.classList.remove("gps"); gpsBtn.classList.remove("on");
+      startMarker.setLatLng([p.lat, p.lon]).addTo(map);
+    } else {
+      state.end = p;
+      toInput.value = p.label;
+      endMarker.setLatLng([p.lat, p.lon]).addTo(map);
+    }
+    hideResults();
+    route();
+  }
+
+  // ---------- search ----------
+  let activeField = null, searchSeq = 0;
+  function hideResults() { results.hidden = true; results.innerHTML = ""; pickHint.hidden = true; }
+
+  function showChoices(which, items, query) {
+    results.innerHTML = "";
+    const add = (html, fn) => {
+      const li = document.createElement("li"); const b = document.createElement("button");
+      b.type = "button"; b.innerHTML = html; b.addEventListener("click", fn); li.append(b); results.append(li);
+    };
+    if (which === "start") add(`<span class="action">Use my location</span>`, () => { hideResults(); fromInput.blur(); useGpsStart(); });
+    add(`<span class="action">Choose on map</span>`, () => {
+      state.pick = which; hideResults(); (which === "start" ? fromInput : toInput).blur();
+      pickHint.textContent = `Tap the map to set your ${which === "start" ? "start" : "destination"}.`;
+      pickHint.hidden = false;
+    });
+    for (const r of items) {
+      const name = r.name || r.display_name.split(",")[0];
+      const addr = r.display_name.replace(/, New Zealand \/ Aotearoa$|, New Zealand$/, "");
+      add(`<span class="name"></span><span class="addr"></span>`, () => setPoint(which, { lat: +r.lat, lon: +r.lon, label: name }));
+      const btn = results.lastElementChild.querySelector("button");
+      btn.querySelector(".name").textContent = name; btn.querySelector(".addr").textContent = addr;
+    }
+    if (query && !items.length) {
+      const li = document.createElement("li"); li.className = "hint"; li.textContent = `Nothing found for "${query}" around Christchurch.`; results.append(li);
+    }
+    results.hidden = false;
+  }
+
+  async function search(which, q) {
+    const seq = ++searchSeq;
+    if (!q.trim()) { showChoices(which, [], ""); return; }
+    try {
+      const url = `${NOMINATIM}/search?format=jsonv2&limit=6&countrycodes=nz&viewbox=${VIEWBOX}&bounded=1&q=${encodeURIComponent(q)}`;
+      const res = await fetch(url, { headers: { "Accept-Language": "en-NZ" } });
+      const data = await res.json();
+      if (seq === searchSeq) showChoices(which, data, q);
+    } catch { if (seq === searchSeq) { showChoices(which, [], ""); setStatus("Search isn't responding. Check your connection and try again.", true); } }
+  }
+
+  // search after a pause in typing (Nominatim asks for ≤1 request a second)
+  let debounce;
+  for (const [input, which] of [[fromInput, "start"], [toInput, "end"]]) {
+    input.addEventListener("focus", () => {
+      activeField = which;
+      if (which === "start" && state.start.gps) { input.value = ""; input.classList.remove("gps"); }
+      input.select();
+      showChoices(which, [], "");
+    });
+    input.addEventListener("input", () => { clearTimeout(debounce); debounce = setTimeout(() => search(which, input.value), 700); });
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") { clearTimeout(debounce); search(which, input.value); } });
+    input.addEventListener("blur", () => setTimeout(() => {
+      if (document.activeElement === fromInput || document.activeElement === toInput) return;
+      if (which === "start" && state.start.gps) { fromInput.value = "My location"; fromInput.classList.add("gps"); }
+      else if (which === "start") fromInput.value = state.start.label;
+      else toInput.value = state.end ? state.end.label : "";
+    }, 250));
+  }
+
+  gpsBtn.addEventListener("click", useGpsStart);
+  $("swapBtn").addEventListener("click", () => {
+    const s = state.start.gps ? (state.me ? { lat: state.me.lat, lon: state.me.lon, label: "My location" } : null) : state.start;
+    const e = state.end;
+    if (!e) return;
+    state.end = s;
+    if (s) { toInput.value = s.label; endMarker.setLatLng([s.lat, s.lon]).addTo(map); } else { toInput.value = ""; map.removeLayer(endMarker); }
+    setPoint("start", e);
+  });
+  $("recenter").addEventListener("click", () => {
+    if (state.me) { state.followed = true; map.setView([state.me.lat, state.me.lon], Math.max(map.getZoom(), 16)); }
+    else startWatch();
+  });
+  map.on("dragstart", () => { state.followed = false; });
+
+  // map tap = drop a pin
+  map.on("click", async (ev) => {
+    const which = pickHint.hidden ? "end" : state.pick;
+    if (!pickHint.hidden) pickHint.hidden = true;
+    else if (!results.hidden) { hideResults(); return; } // first tap just closes the search list
+    const p = { lat: ev.latlng.lat, lon: ev.latlng.lng, label: "Dropped pin" };
+    setPoint(which, p);
+    try {
+      const r = await fetch(`${NOMINATIM}/reverse?format=jsonv2&zoom=17&lat=${p.lat}&lon=${p.lon}`, { headers: { "Accept-Language": "en-NZ" } }).then((x) => x.json());
+      const a = r.address || {};
+      const label = r.name || [a.house_number, a.road].filter(Boolean).join(" ") || a.suburb || "Dropped pin";
+      const current = which === "start" ? state.start : state.end;
+      if (current === p) { p.label = label; (which === "start" ? fromInput : toInput).value = label; }
+    } catch { /* keep "Dropped pin" */ }
+  });
+
+  // ---------- routing ----------
+  const profileIds = {};
+  async function profileFor(opt, force = false) {
+    if (opt.profile) return opt.profile;
+    if (profileIds[opt.id] && !force) return profileIds[opt.id];
+    const text = await fetch(opt.profileFile, { cache: "no-cache" }).then((r) => { if (!r.ok) throw new Error("profile"); return r.text(); });
+    const res = await fetch(`${BROUTER}/profile`, { method: "POST", body: text }).then((r) => r.json());
+    if (!res.profileid) throw new Error(res.error || "profile upload failed");
+    return (profileIds[opt.id] = res.profileid);
+  }
+
+  async function fetchRoute(opt, a, b) {
+    const ll = `${a.lon.toFixed(6)},${a.lat.toFixed(6)}|${b.lon.toFixed(6)},${b.lat.toFixed(6)}`;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const profile = await profileFor(opt, attempt > 0);
+      const res = await fetch(`${BROUTER}?lonlats=${ll}&profile=${profile}&alternativeidx=0&format=geojson`);
+      const body = await res.text();
+      if (res.ok && body.trim().startsWith("{")) return parseRoute(JSON.parse(body));
+      // uploaded profiles expire on the server; re-upload once
+      if (!opt.profile && /profile/i.test(body) && attempt === 0) continue;
+      throw new Error(body.slice(0, 160) || `HTTP ${res.status}`);
+    }
+  }
+
+  function kind(tagStr) {
+    const t = {};
+    for (const kv of (tagStr || "").split(" ")) { const i = kv.indexOf("="); if (i > 0) t[kv.slice(0, i)] = kv.slice(i + 1); }
+    const bikeOk = /^(yes|designated|permissive)$/.test(t.bicycle || "");
+    const hw = t.highway || "";
+    const sides = [t.cycleway, t["cycleway:left"], t["cycleway:right"], t["cycleway:both"]];
+    if (hw === "cycleway" || hw === "path" || (/^(footway|pedestrian|bridleway|track)$/.test(hw) && bikeOk)) return "p";
+    if (sides.some((v) => /^(track|opposite_track)$/.test(v || ""))) return "p";
+    if (sides.some((v) => /^(lane|opposite_lane|shared_lane|share_busway)$/.test(v || ""))) return "l";
+    return "r";
+  }
+
+  function parseRoute(gj) {
+    const f = gj.features[0];
+    const coords = f.geometry.coordinates;
+    const props = f.properties;
+    const msgs = props.messages || [];
+    const head = msgs[0] || [];
+    const ix = (n) => head.indexOf(n);
+    const iLon = ix("Longitude"), iLat = ix("Latitude"), iDist = ix("Distance"), iTags = ix("WayTags");
+    const totals = { p: 0, l: 0, r: 0 };
+    const segs = []; // {kind, latlngs}
+    let ci = 0;
+    for (let m = 1; m < msgs.length; m++) {
+      const row = msgs[m];
+      const k = kind(row[iTags]);
+      totals[k] += +row[iDist] || 0;
+      const lon = +row[iLon], lat = +row[iLat];
+      let j = ci;
+      while (j < coords.length && !(Math.round(coords[j][0] * 1e6) === lon && Math.round(coords[j][1] * 1e6) === lat)) j++;
+      if (j >= coords.length) continue; // couldn't align; colour falls back below
+      const pts = coords.slice(ci, j + 1).map((c) => [c[1], c[0]]);
+      if (pts.length > 1) segs.push({ k, pts });
+      ci = j;
+    }
+    if (ci < coords.length - 1) segs.push({ k: "r", pts: coords.slice(ci).map((c) => [c[1], c[0]]), unknown: true });
+    const sum = totals.p + totals.l + totals.r || 1;
+    return {
+      meters: +props["track-length"],
+      seconds: +props["total-time"],
+      share: { p: totals.p / sum, l: totals.l / sum, r: totals.r / sum },
+      segs, all: coords.map((c) => [c[1], c[0]]),
+    };
+  }
+
+  let routeSeq = 0;
+  async function route() {
+    const a = state.start.gps ? state.me : state.start;
+    const b = state.end;
+    if (!b) return;
+    if (!a) { setStatus(state.start.gps ? "Waiting for your location…" : "Set a start point."); return; }
+    const seq = ++routeSeq;
+    state.results = {};
+    routeLayer.clearLayers();
+    setStatus("");
+    renderCards(true);
+    let fitted = false;
+    await Promise.all(OPTIONS.map(async (opt) => {
+      try {
+        const r = await fetchRoute(opt, a, b);
+        if (seq !== routeSeq) return;
+        state.results[opt.id] = r;
+        if (opt.id === state.selected || (!fitted && !state.results[state.selected])) {
+          if (!fitted) { map.fitBounds(L.latLngBounds(r.all), fitPad()); fitted = true; }
+        }
+      } catch (e) {
+        if (seq !== routeSeq) return;
+        state.results[opt.id] = { error: e.message };
+      }
+      renderCards(false);
+      drawRoutes();
+    }));
+    if (seq === routeSeq && OPTIONS.every((o) => state.results[o.id]?.error)) {
+      setStatus("Couldn't get routes. The routing service may be busy or offline. Try again in a minute.", true);
+    }
+  }
+
+  function fitPad() {
+    const top = $("topCard").getBoundingClientRect().bottom + 16;
+    const bottom = window.innerHeight - $("sheet").getBoundingClientRect().top + 16;
+    return { paddingTopLeft: [24, top], paddingBottomRight: [24, bottom] };
+  }
+
+  function drawRoutes() {
+    routeLayer.clearLayers();
+    const css = getComputedStyle(document.documentElement);
+    const col = { p: css.getPropertyValue("--path").trim(), l: css.getPropertyValue("--lane").trim(), r: css.getPropertyValue("--road").trim() };
+    // other options as faint grey lines underneath
+    for (const opt of OPTIONS) {
+      const r = state.results[opt.id];
+      if (!r || r.error || opt.id === state.selected) continue;
+      L.polyline(r.all, { color: "#6b7a72", weight: 5, opacity: .45, lineCap: "round" })
+        .on("click", (e) => { L.DomEvent.stop(e); select(opt.id); }).addTo(routeLayer);
+    }
+    const sel = state.results[state.selected];
+    if (sel && !sel.error) {
+      L.polyline(sel.all, { color: "#ffffff", weight: 10, opacity: .95, lineCap: "round", interactive: false }).addTo(routeLayer);
+      for (const s of sel.segs) L.polyline(s.pts, { color: col[s.k], weight: 6, opacity: 1, lineCap: "round", interactive: false }).addTo(routeLayer);
+    }
+  }
+
+  function select(id) {
+    state.selected = id;
+    renderCards(false); drawRoutes();
+    const r = state.results[id];
+    if (r && !r.error) map.fitBounds(L.latLngBounds(r.all), fitPad());
+  }
+
+  const fmtKm = (m) => (m / 1000).toFixed(m < 10000 ? 1 : 0);
+  const fmtMin = (s) => { const m = Math.round(s / 60); return m < 60 ? `${m}` : `${Math.floor(m / 60)}h ${m % 60}`; };
+  const pct = (x) => Math.round(x * 100);
+
+  function renderCards(loading) {
+    routesEl.hidden = false;
+    routesEl.innerHTML = "";
+    const best = Math.max(...OPTIONS.map((o) => state.results[o.id]?.share?.p ?? -1));
+    for (const opt of OPTIONS) {
+      const r = state.results[opt.id];
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "route";
+      b.setAttribute("aria-pressed", String(opt.id === state.selected));
+      b.addEventListener("click", () => select(opt.id));
+      if (!r) {
+        b.classList.add("loading");
+        b.innerHTML = `<div class="head"><span class="label"></span><span class="nums">—</span></div><div class="sub">Working out the route…</div>`;
+      } else if (r.error) {
+        b.classList.add("failed");
+        b.innerHTML = `<div class="head"><span class="label"></span></div><div class="sub">No route found for this option.</div>`;
+      } else {
+        const w = (x) => `${(x * 100).toFixed(1)}%`;
+        const isMost = r.share.p === best && best > 0 && OPTIONS.filter((o) => state.results[o.id]?.share?.p === best).length === 1;
+        b.innerHTML = `
+          <div class="head">
+            <span style="display:flex;flex-wrap:wrap;column-gap:8px;align-items:baseline"><span class="label"></span>${isMost ? ` <span class="badge">Most separated</span>` : ""}</span>
+            <span class="nums">${fmtKm(r.meters)}<small> km</small> · ${fmtMin(r.seconds)}<small> min</small></span>
+          </div>
+          <div class="bar" aria-hidden="true"><span class="p" style="width:${w(r.share.p)}"></span><span class="l" style="width:${w(r.share.l)}"></span><span class="r" style="width:${w(r.share.r)}"></span></div>
+          <div class="mix">
+            <span><i style="background:var(--path)"></i><b>${pct(r.share.p)}%</b> cycleway/path</span>
+            <span><i style="background:var(--lane)"></i><b>${pct(r.share.l)}%</b> lane</span>
+            <span><i style="background:var(--road)"></i><b>${pct(r.share.r)}%</b> road</span>
+          </div>`;
+        b.setAttribute("aria-label", `${opt.label}: ${fmtKm(r.meters)} km, ${fmtMin(r.seconds)} minutes, ${pct(r.share.p)}% on cycleways or paths`);
+      }
+      b.querySelector(".label").textContent = opt.label;
+      routesEl.append(b);
+    }
+  }
+
+  // ---------- go ----------
+  setStatus("Finding your location…");
+  startWatch();
+  placeFab();
+})();
+</script>
+</body>
+</html>
